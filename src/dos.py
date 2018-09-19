@@ -3,6 +3,7 @@
 
 import numpy as np
 import functools
+from math import sqrt, pi
 
 # Constants
 HARTREE_TO_EV=27.2113838565563
@@ -11,7 +12,7 @@ THRESHOLD = 0.45
 HOMO_THRESHOLD = 0.1
 VACUUM_THRESHOLD = 1e-3
 ENERGY_WINDOW = 1.0
-ABSOLUTE_POTENTIAL = 4.44 # Volts
+ABSOLUTE_POTENTIAL = -4.44 # Volts
 EPS_SMALL = 1e-6
 
 def check_array_type(len_array=2, my_shape=-1, num_args=1):
@@ -39,13 +40,14 @@ def is_number(num_args=1):
 		@functools.wraps(func)
 		def wrapper(*args, **kwargs):
 			if len(args) != num_args+1:
-				raise TypeError("Function should be called with exactly {num_args} argument(s).")
+				raise TypeError(f"Function should be called with exactly {num_args} argument(s).")
 			for value in args[1:]:
 				if not isinstance(value, (float, int)):
 					raise TypeError("Input should be a float or an int.")
 			func(*args, *kwargs)
 		return wrapper
 	return is_number_decorator
+
 
 class DOSFrame:
 	"""Class to store density of states (DOS) and electrode potential
@@ -96,7 +98,7 @@ class DOSFrame:
 		self._fermi = fermi
 
 		if hasattr(self, "_voltage"):
-		 	self.voltage = np.array([self.vacuum[1]-self.fermi, self.vacuum[1]-self.fermi-ABSOLUTE_POTENTIAL])
+		 	self.voltage = np.array([self.vacuum[1]-self.fermi, self.vacuum[1]-self.fermi+ABSOLUTE_POTENTIAL])
 
 	@property
 	def potential(self):
@@ -168,7 +170,7 @@ class DOSFrame:
 		self._smear = array
 
 	def smear_dos(self, width):
-		"""Computes a Gaussian smeared DOS.
+		"""Smears the total projected DOS with a Gaussian function.
 
 		Parameters
 		----------
@@ -182,7 +184,6 @@ class DOSFrame:
 			if not self.tpdos is not None:
 				raise ValueError("TPDOS must be calculated prior to smearing")
 			for e, pd in self.tpdos:
-				print(e, pd)
 				self._dos_smeared += pd*delta(self.eigenvalues, e, width)
 
 			self.smear = np.hstack((self.eigenvalues.reshape((len(self._dos[:,0]),1)), self._dos_smeared.reshape((len(self._dos[:,0]),1))))
@@ -200,15 +201,28 @@ class DOSFrame:
 	def get_voltage(self, relative=False):
 		return self.voltage[1] if relative else self.voltage[0]
 
+	def calculate_voltage(self):
+		if self.potential is None:
+			raise ValueError("The electrostatic potential must be defined before calculating the voltage.")
+
+		if self.vacuum is None:
+			raise ValueError("The vacuum potential must be defined before calculating the voltage.")
+
+		self.voltage =  np.array([self.vacuum[1]-self.fermi, self.vacuum[1]-self.fermi+ABSOLUTE_POTENTIAL])
+
 	@property
 	def vacuum(self):
 	    # Returns a two element list [position, potential]
 	    return self._vacuum
 
 	@vacuum.setter
+	@check_array_type(len_array=1)
+	def vacuum(self, value):
+		self._vacuum = value
+
 	@is_number()
-	def vacuum(self, x):
-		"""Set value of vacuum potential which acts a reference point to calculate the electrode potential.
+	def calculate_vacuum(self, x):
+		"""Compute value of vacuum potential which acts a reference point to calculate the electrode potential.
 
 		Parameters
 		----------
@@ -225,19 +239,20 @@ class DOSFrame:
 			raise ValueError(f'Input coordinate "{x}" could not be recognized as a valid float.')
 
 		if x < 0:
-			loc = self.find_vacuum_potential()
-			self._vacuum = self.potential[loc, :]
+			loc = self._find_vacuum_potential()
+			self.vacuum = self.potential[loc, :]
 		else:
 			loc = np.where( abs(self.potential[:,0]-x) < EPS )
 			try:
 				if not loc[0][0]: raise ValueError
 			except (IndexError, ValueError):
 				raise ValueError(f'Given coordinate {x} outside the range (within EPS {EPS}) of allowed coordinates. Unable to determine vacuum potential')
-			self._vacuum = self.potential[loc[0][0]]
 
-		self.voltage =  np.array([self.vacuum[1]-self.fermi, self.vacuum[1]-self.fermi-ABSOLUTE_POTENTIAL])
+			self.vacuum = self.potential[loc[0][0]]
 
-	def find_vacuum_potential(self):
+		self.calculate_voltage()
+
+	def _find_vacuum_potential(self):
 		'''
 		Determine vacuum potential by:
 			1) Numerically differentiating electrostatic potential
@@ -332,7 +347,6 @@ class DOS(object):
 		"""
 		self.dos = {frame: DOSFrame(dos, fermi) for (frame, dos, fermi) in yield_dos(fname, t)}
 
-
 	def read_potential(self, fname):
 		"""Reads a file that contains the averaged electrostatic potential along
 		the surface normal direction. The potential is added to the elements of
@@ -360,45 +374,28 @@ class DOS(object):
 		if nframes != len(self.dos.keys()):
 			raise IndexError("Incompatible trajectory lengths.")
 
-
-	def evaluate(self, method, *args, **kwargs):
+	def evaluate(self, method, frame, *args, **kwargs):
 		"""Function wrapper that calls a method iteratively on all frames"""
 		if not hasattr(self, '_method_list'):
 			# Store a list of public functions
-			self._method_list =  [func for func in dir(DOSFrame) if callable(getattr(DOSFrame, func)) and not func.startswith("__")]
+			self._method_list =  [func for func in dir(DOSFrame) if callable(getattr(DOSFrame, func)) and not func.startswith("_")]
 
 		# Raise error if requested method not in list of public functions
 		if method not in self._method_list:
-			raise ValueError(f"Function {method} is not a callable function of type DOSFrame. \
-							   Accepted functions: {self._method_list}")
+			raise ValueError(f"Function {method} is not a callable function of type DOSFrame. "
+							 f"Accepted functions: {self._method_list}.")
 
-		# Iteratively call function on all frames
-		for frame, obj in self.dos.items():
-			#self.evaluate_frame()
-			func = getattr(obj, method)
-			func(*args, *kwargs)
-
-
-	def get_property(self, frame, property):
-		"""Get the value of a property of a DOSFrame object at timestep frame.
-
-		Parameters
-		----------
-		frame:
-			The timestep where to get the property. Accepts a single number,
-			a list of number, or 'all' which will return the value of the
-			property over the entire trajectory.
-
-		property:
-			The property that should be returned.
-		"""
 		if frame == 'all':
-			# Iteratively call get_property_frame on all frames
-			result = []
+			# Iteratively call function on all frames
+			return_val = []
 			for frame, obj in self.dos.items():
-				result.append(self._get_property_frame(frame, property))
+				func = getattr(obj, method)
+				my_return = func(*args, *kwargs)
+				# Collect function return values in case they differ from None
+				if my_return is not None: return_val.append(my_return)
 
-			return result
+			# Return non-None return vals
+			if return_val != []: return return_val
 
 		elif isinstance(frame, (float, int)):
 			# Single frame
@@ -406,7 +403,57 @@ class DOS(object):
 				frame = float(frame)
 			except ValueError:
 				pass
-			return self._get_property_frame(frame, property)
+			obj = self.dos[frame]
+			func = getattr(obj, method)
+			my_return = func(*args, *kwargs)
+
+			if my_return is not None: return my_return
+
+		elif isinstance(frame, list):
+			# Custom list of frames
+			return_val = []
+			for fr in frame():
+				try:
+					fr = float(fr)
+				except ValueError:
+					raise ValueError(f"Requested frame {fr} was not recognized as a valid float.")
+
+				obj = self.dos[fr]
+				func = getattr(obj, method)
+				my_return = func(*args, *kwargs)
+				if my_return is not None: return_val.append(my_return)
+
+			if return_val != []: return return_val
+
+		else:
+			raise ValueError(f"Requested frame {frame} could not be parsed. Expected string 'all', a float, or a list of floats.")
+
+
+	def get_property(self, property, frame):
+		"""Get the value of a property of a DOSFrame object at timestep frame.
+
+		Parameters
+		----------
+		property:
+			The property that should be returned.
+
+		frame:
+			The timestep where to get the property. Accepts a single number,
+			a list of number, or 'all' which will return the value of the
+			property over the entire trajectory.
+		"""
+		if frame == 'all':
+			# Iteratively call get_property_frame on all frames
+			result = []
+			for frame, obj in self.dos.items():
+				result.append(self._get_property_frame(property, frame))
+
+			return result
+
+		elif isinstance(frame, (float, int)):
+			# Single frame
+			frame = float(frame)
+			return self._get_property_frame(property, frame)
 
 		elif isinstance(frame, list):
 			# A custom list of frames
@@ -415,48 +462,54 @@ class DOS(object):
 				try:
 					fr = float(fr)
 				except ValueError:
-					pass
-				result.append(self._get_property_frame(fr, property))
+					raise ValueError(f"Requested frame {fr} was not recognized as a valid float.")
+
+				result.append(self._get_property_frame(property, fr))
 
 			return result
 
 		else:
 			raise ValueError(f"Requested frame {frame} could not be parsed. Expected string 'all', a float, or a list of floats.")
 
-	def _get_property_frame(self, frame, property):
+
+	def _get_property_frame(self, property, frame):
 		"""Get attribute 'property' from DOSFrame at given timestep 'frame'."""
 		if frame not in self.dos.keys():
 			raise ValueError(f"Tried to get property {property} from invalid frame {frame}.")
 
+		if not hasattr(self, '._variable_list'):
+			 self._variable_list =  [var for var in dir(DOSFrame) if not callable(getattr(DOSFrame, var)) and not var.startswith("__")]
+
+		if property not in self._variable_list:
+			raise ValueError(f"Tried to get invalid property {property}. Available properties {self._variable_list}.")
+
 		return getattr(self.dos[frame], property)
 
-	def set_property(self, frame, property, value):
+
+	def set_property(self, property, value, frame):
 		"""A setter that modifies the value of a DOSFrame property at timestep frame.
 		Parameters
 		----------
-		frame:
-			The timestep where to get the property. Accepts a single number,
-			a list of number, or 'all' which will return the value of the
-			property over the entire trajectory.
-
 		property:
 			The property that should be modified.
 
 		value:
 			The new value of the DOSFrame property.
+
+		frame:
+			The timestep where to get the property. Accepts a single number,
+			a list of number, or 'all' which will return the value of the
+			property over the entire trajectory.
 		"""
 		if frame == 'all':
 			# Iteratively call set_property_frame on all frames
 			for frame, obj in self.dos.items():
-				self._set_property_frame(frame, property, value)
+				self._set_property_frame(property, value, frame)
 
 		elif isinstance(frame, (float, int)):
 			# Single frame
-			try:
-				frame = float(frame)
-			except ValueError:
-				pass
-			self._set_property_frame(frame, property, value)
+			frame = float(frame)
+			self._set_property_frame(property, value, frame)
 
 		elif isinstance(frame, list):
 			# Custom list of frames
@@ -464,13 +517,15 @@ class DOS(object):
 				try:
 					fr = float(fr)
 				except ValueError:
-					pass
-				self._set_property_frame(fr, property, value)
+					raise ValueError(f"Requested frame {fr} was not recognized as a valid float.")
+
+				self._set_property_frame(property, value, fr)
 
 		else:
 			raise ValueError(f"Requested frame {frame} could not be parsed. Expected string 'all', a float, or a list of floats.")
 
-	def _set_property_frame(self, frame, property, value):
+
+	def _set_property_frame(self, property, value, frame):
 		"""Changes the value of a DOSFrame property at timestep frame."""
 		if frame not in self.dos.keys():
 			raise ValueError(f"Tried to set property {property} to invalid frame {frame}.")
@@ -479,7 +534,7 @@ class DOS(object):
 			 self._variable_list =  [var for var in dir(DOSFrame) if not callable(getattr(DOSFrame, var)) and not var.startswith("__")]
 
 		if property not in self._variable_list:
-			raise ValueError(f"Tried to set invalid property {property}. Accepted propeties {self._variable_list}.")
+			raise ValueError(f"Tried to set invalid property {property}. Accepted properties {self._variable_list}.")
 
 		setattr(self.dos[frame], property, value)
 
