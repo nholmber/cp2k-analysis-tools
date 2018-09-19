@@ -12,7 +12,7 @@ The following scripts are included (see folder [src](https://github.com/nholmber
 
 You can find Jupyter notebooks in the [examples](https://github.com/nholmber/cp2k-analysis-tools/tree/master/examples) directory, which show you how to use the scripts and highlight their features. The notebooks are compatible with [Google Colaboratory](https://colab.research.google.com/), which is a cloud-based environment where you can run notebooks if you don't want to install the Python/Jupyter dependencies on your own computer.
 
-![Opening Notebooks in Google Colaboratory](img/notebook_colab.png)
+![Opening Notebooks in Google Colaboratory](img/colab.gif)
 
 The notebooks appended with the suffix `_colab` are intended for use with Google Colaboratory. You can open them in a browser by modifying the notebook GitHub URL to point to Google Colaboratory like this:
 
